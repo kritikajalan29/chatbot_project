@@ -1,0 +1,7 @@
+{
+  "extraPaths": [
+    "."
+  ],
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
+} 

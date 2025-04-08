@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error - Music Chatbot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f4f4f9;
+            flex-direction: column;
+            text-align: center;
+        }
+        .error-container {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            color: #e74c3c;
+            margin-top: 0;
+        }
+        .error-code {
+            font-size: 3rem;
+            font-weight: bold;
+            color: #e74c3c;
+            margin: 1rem 0;
+        }
+        .error-message {
+            margin-bottom: 1.5rem;
+            color: #333;
+        }
+        .home-button {
+            background-color: #3498db;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        .home-button:hover {
+            background-color: #2980b9;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1>Oops! Something went wrong</h1>
+        <div class="error-code">{{ error_code }}</div>
+        <div class="error-message">{{ error_message }}</div>
+        <a href="/" class="home-button">Return to Home</a>
+    </div>
+</body>
+</html> 

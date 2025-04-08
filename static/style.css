@@ -1,0 +1,84 @@
+body {
+    font-family: Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background-color: #f4f4f9;
+}
+.chat-container {
+    width: 400px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    height: 500px;
+}
+.chat-box {
+    flex: 1;
+    overflow-y: scroll;
+    margin-bottom: 10px;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    height: 400px;
+    display: flex;
+    flex-direction: column;
+}
+.chat-box p {
+    margin: 5px 0;
+}
+.input-container {
+    display: flex;
+    justify-content: space-between;
+}
+input[type="text"] {
+    width: 80%;
+    padding: 10px;
+    margin-right: 10px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+}
+button {
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+.artist-search {
+    display: flex;
+    margin-top: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+}
+.artist-search input {
+    flex: 1;
+    margin-right: 10px;
+}
+.artist-search button {
+    background-color: #3498db;
+}
+.album-list {
+    margin-top: 5px;
+    margin-left: 20px;
+}
+.album-item {
+    margin-bottom: 2px;
+    font-size: 0.9em;
+}
+.progress-indicator {
+    font-style: italic;
+    color: #666;
+}
+.debug-info {
+    font-size: 0.8em;
+    margin-top: 10px;
+    padding: 5px;
+    background-color: #f5f5f5;
+    border-radius: 3px;
+    display: none;
+}
