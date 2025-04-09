@@ -138,57 +138,211 @@ function checkArtistResults() {
 
 function searchArtist() {
     const artistName = document.getElementById('artist-input').value.trim();
-    if (!artistName) return;
+    if (artistName === '') {
+        alert('Please enter an artist name');
+        return;
+    }
+
+    // Clear previous results
+    document.getElementById('artist-results').innerHTML = '<div class="loading">Searching for artist...</div>';
     
-    // Reset search state - store in lowercase for consistent lookup
-    lastSearchedArtist = artistName.toLowerCase();
-    checkingResults = true;
-    searchAttempts = 0;
-    
-    let chatBox = document.getElementById('chat-box');
-    chatBox.innerHTML += `<p><strong>You:</strong> Searching for artist: ${artistName}</p>`;
-    
-    // Show searching indicator
-    let searchingIndicator = document.createElement('p');
-    searchingIndicator.id = 'searching-indicator';
-    searchingIndicator.innerHTML = '<strong>Bot:</strong> <em>Searching for artist details...</em>';
-    searchingIndicator.classList.add('progress-indicator');
-    chatBox.appendChild(searchingIndicator);
-    
-    // Scroll to the bottom
-    chatBox.scrollTop = chatBox.scrollHeight;
-    
-    // Update URL to use relative path instead of hardcoded localhost
+    // Show the results area
+    document.getElementById('artist-results-section').style.display = 'block';
+
+    // Call the trigger artist endpoint
     fetch('/trigger-artist', {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ artist_name: artistName })
+        body: JSON.stringify({ artist_name: artistName }),
     })
     .then(response => response.json())
     .then(data => {
-        updateDebugInfo(`Triggered search: ${data.status}`);
+        console.log('Artist search response:', data);
         
-        // Start checking for results
-        setTimeout(checkArtistResults, 1000);
-        
-        // Clear input
-        document.getElementById('artist-input').value = '';
-    })
-    .catch(error => {
-        // Remove searching indicator
-        if (document.getElementById('searching-indicator')) {
-            document.getElementById('searching-indicator').remove();
+        if (data.status === 'error') {
+            // If there was an error, display it immediately
+            document.getElementById('artist-results').innerHTML = `
+                <div class="error">
+                    <p>${data.message || 'Error searching for artist'}</p>
+                </div>
+            `;
+            return;
         }
         
-        console.error('Error:', error);
-        updateDebugInfo(`Error triggering search: ${error.message}`);
-        chatBox.innerHTML += `<p><strong>Bot:</strong> <span style="color: red;">Error triggering artist search: ${error.message}</span></p>`;
+        // If we got immediate results, display them
+        if (data.response) {
+            document.getElementById('artist-results').innerHTML = `
+                <div class="result">
+                    <p>${formatMarkdown(data.response)}</p>
+                </div>
+            `;
+            
+            // If the response indicates we need to poll for results, start polling
+            if (data.response.includes("I'm looking up information") || 
+                data.response.includes("Please check back")) {
+                pollForArtistResults(artistName);
+            }
+            return;
+        }
         
-        // Scroll to the bottom
-        chatBox.scrollTop = chatBox.scrollHeight;
+        // If we don't have an immediate result, start polling
+        pollForArtistResults(artistName);
+    })
+    .catch(error => {
+        console.error('Error searching for artist:', error);
+        document.getElementById('artist-results').innerHTML = `
+            <div class="error">
+                <p>Error connecting to the server. Please try again later.</p>
+            </div>
+        `;
     });
+}
+
+function pollForArtistResults(artistName, attempts = 0) {
+    // Maximum number of polling attempts (30 * 2 seconds = 60 seconds total)
+    const MAX_ATTEMPTS = 30;
+    
+    if (attempts >= MAX_ATTEMPTS) {
+        document.getElementById('artist-results').innerHTML = `
+            <div class="error">
+                <p>It's taking longer than expected to find information about "${artistName}". 
+                Please try again later.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Update the loading message to show we're still working
+    const loadingDiv = document.querySelector('#artist-results .loading');
+    if (loadingDiv) {
+        loadingDiv.innerHTML = `Searching for artist${'.'.repeat((attempts % 3) + 1)}`;
+    }
+    
+    // Wait 2 seconds between polls
+    setTimeout(() => {
+        fetch(`/get-artist-results?artist_name=${encodeURIComponent(artistName)}`)
+        .then(response => response.json())
+        .then(data => {
+            console.log('Poll response:', data);
+            
+            if (data.status === 'pending') {
+                // Still processing, continue polling
+                pollForArtistResults(artistName, attempts + 1);
+                return;
+            }
+            
+            if (data.status === 'error') {
+                // Error occurred during processing
+                document.getElementById('artist-results').innerHTML = `
+                    <div class="error">
+                        <p>${data.message || 'An error occurred while processing your request.'}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            if (data.status === 'not_found') {
+                // Artist wasn't found
+                document.getElementById('artist-results').innerHTML = `
+                    <div class="result">
+                        <p>No artist found matching "${artistName}".</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            if (data.status === 'success') {
+                // Success! Display the artist information
+                const albums = data.albums || [];
+                
+                let resultHTML = `
+                    <div class="result">
+                        <h3>${data.name}</h3>
+                        <p>Albums: ${albums.length}</p>
+                        <p>Total Tracks: ${data.total_tracks || 0}</p>
+                `;
+                
+                if (data.main_genres && data.main_genres.length > 0) {
+                    resultHTML += `<p>Genres: ${data.main_genres.join(', ')}</p>`;
+                }
+                
+                if (albums.length > 0) {
+                    resultHTML += '<h4>Albums:</h4><ul>';
+                    albums.forEach(album => {
+                        resultHTML += `<li>${album.title} (${album.track_count} tracks)</li>`;
+                    });
+                    resultHTML += '</ul>';
+                } else {
+                    resultHTML += '<p>No albums found for this artist.</p>';
+                }
+                
+                resultHTML += '</div>';
+                document.getElementById('artist-results').innerHTML = resultHTML;
+            }
+        })
+        .catch(error => {
+            console.error('Error polling for results:', error);
+            // Continue polling anyway in case it was a temporary network issue
+            pollForArtistResults(artistName, attempts + 1);
+        });
+    }, 2000);
+}
+
+// Helper function to format markdown-style text to HTML
+function formatMarkdown(text) {
+    if (!text) return '';
+    
+    // Convert **bold** to <strong>bold</strong>
+    text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    
+    // Convert bullet points (• or *) to list items
+    const hasBulletPoints = text.includes('• ') || /^\* /m.test(text);
+    
+    if (hasBulletPoints) {
+        // Split into lines
+        const lines = text.split('\n');
+        let inList = false;
+        let result = '';
+        
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            
+            // Check if this line is a bullet point
+            if (trimmed.startsWith('• ') || trimmed.startsWith('* ')) {
+                // Start a new list if we're not in one
+                if (!inList) {
+                    result += '<ul>';
+                    inList = true;
+                }
+                
+                // Add the list item
+                result += `<li>${trimmed.substring(2)}</li>`;
+            } else {
+                // End the list if we're in one
+                if (inList) {
+                    result += '</ul>';
+                    inList = false;
+                }
+                
+                // Add the line
+                result += line + '\n';
+            }
+        });
+        
+        // Close the list if we're still in one
+        if (inList) {
+            result += '</ul>';
+        }
+        
+        text = result;
+    }
+    
+    // Convert newlines to <br>
+    text = text.replace(/\n/g, '<br>');
+    
+    return text;
 }
 
 function sendMessage() {

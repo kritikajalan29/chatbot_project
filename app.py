@@ -26,12 +26,18 @@ CORS(app)
 # Initialize OpenAI API using key from .env file
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Inngest configuration
-INNGEST_URL = os.getenv("INNGEST_URL", "http://127.0.0.1:8288/e/inngest")
-INNGEST_FUNCTION_NAME = "get-artist"
+# Environment variables and configuration
+INNGEST_URL = os.getenv("INNGEST_URL", "http://localhost:8288/e")
+INNGEST_FUNCTION_NAME = os.getenv("INNGEST_FUNCTION_NAME", "get-artist")
+INNGEST_ENABLED = True  # Always require Inngest
+
+# Log configuration
+logger.info(f"Using Inngest URL: {INNGEST_URL}")
+if not INNGEST_URL:
+    logger.error("INNGEST_URL environment variable is not set! Artist search will fail.")
 
 # Store recent results temporarily (for demo purposes - in production use Redis/database)
-RECENT_ARTIST_RESULTS = {}
+RECENT_ARTIST_RESULTS: Dict[str, Dict[str, Any]] = {}
 
 # Root route to serve the main page
 @app.route('/')
@@ -95,41 +101,61 @@ def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 def call_openai(system_message: str, user_message: str, temperature: float = 0) -> str:
-    """
-    Utility function for OpenAI API calls.
-    
-    Args:
-        system_message: System message for the OpenAI API
-        user_message: User message for the OpenAI API
-        temperature: Temperature parameter for the API call
-        
-    Returns:
-        str: Response from OpenAI API
-    """
+    """Utility function for OpenAI API calls"""
     try:
-        from openai import OpenAI
-        client = OpenAI()
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=temperature
-        )
-        return response.choices[0].message.content.strip()
+        # Try with new OpenAI client (v1.0+)
+        try:
+            from openai import OpenAI
+            client = OpenAI()
+            # Remove proxies parameter if it's causing issues
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=temperature
+            )
+            return response.choices[0].message.content.strip()
+        except TypeError as e:
+            # Handle the specific TypeError for proxies
+            if "got an unexpected keyword argument 'proxies'" in str(e):
+                logger.warning("OpenAI client error with proxies, retrying without proxies")
+                from openai import OpenAI
+                client = OpenAI()
+                # Create a new client without the proxies parameter
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=temperature
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                raise
     except Exception as e:
-        print(f"Error with new OpenAI client: {str(e)}")
-        # Fall back to legacy format
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=temperature
-        )
-        return response['choices'][0]['message']['content'].strip()
+        logger.error(f"Error with new OpenAI client: {str(e)}")
+        
+        try:
+            # Try with explicit version for legacy API (v0.x)
+            import openai
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=temperature
+            )
+            return response['choices'][0]['message']['content'].strip()
+        except Exception as legacy_error:
+            logger.error(f"Error with legacy OpenAI client: {str(legacy_error)}")
+            
+            # Last resort fallback - return a default response
+            logger.warning("Both OpenAI API calls failed, returning default response")
+            return "I'm sorry, I couldn't process that request due to an API issue. Please try again later."
 
 @app.route('/message', methods=['POST'])
 def handle_message() -> Dict[str, str]:
@@ -143,206 +169,50 @@ def handle_message() -> Dict[str, str]:
     response = get_chatbot_response(user_message)
     return jsonify({"response": response})
 
-@app.route("/trigger-artist", methods=["POST"])
-def trigger_artist() -> Dict[str, Any]:
+@app.route('/trigger-artist', methods=['POST'])
+def trigger_artist():
     """
-    Trigger the Inngest function to get artist details.
+    Endpoint to trigger an Inngest function to fetch artist information.
+    This provides an asynchronous way to look up artist details.
+    """
+    if not request.is_json:
+        logger.error("Trigger artist endpoint received non-JSON payload")
+        return jsonify({"status": "error", "message": "Expected JSON payload"}), 400
     
-    Returns:
-        Dict[str, Any]: Response containing status and any error messages
-    """
     try:
         data = request.json
-        artist_name = data.get("artist_name", "")
         
-        if not artist_name:
-            return jsonify({
-                "status": "error",
-                "message": "Artist name is required"
-            }), 400
-
+        # Validate required fields
+        if not data.get("artist_name"):
+            logger.error("Trigger artist missing artist_name field")
+            return jsonify({"status": "error", "message": "Missing artist_name field"}), 400
+        
+        artist_name = data.get("artist_name")
         logger.info(f"Triggering Inngest function for artist: {artist_name}")
         
-        # Store that we're looking for this artist - use lowercase for consistent lookup
-        search_key = artist_name.lower()
-        RECENT_ARTIST_RESULTS[search_key] = {"status": "pending"}
+        response = check_artist_via_inngest(artist_name)
         
-        # Process artist directly without waiting for Inngest
-        process_artist(artist_name)
-        
-        # Still trigger Inngest for demonstration purposes
-        try:
-            response = requests.post(
-                INNGEST_URL,
-                json={
-                    "name": INNGEST_FUNCTION_NAME,
-                    "data": {"artist_name": artist_name}
-                },
-                timeout=10  # Add timeout to prevent hanging
-            )
-            response_data = response.json() if response.status_code == 200 else {}
-        except Exception as e:
-            logger.error(f"Error calling Inngest (non-critical): {str(e)}")
-            response_data = {}
-        
+        # Return a success response with the message from check_artist_via_inngest
         return jsonify({
-            "status": "success",
-            "message": "Artist details request is being processed",
-            "artist_name": artist_name,
-            "search_key": search_key,
-            "inngest_response": response_data
+            "status": "success", 
+            "message": "Request processed",
+            "response": response
         })
-        
+    
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": "An unexpected error occurred"
-        }), 500
+        logger.exception(f"Error triggering artist function: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/inngest', methods=['POST', 'PUT'])
 def inngest_webhook():
-    """Endpoint for Inngest to send events"""
+    """Endpoint for Inngest to send events (legacy endpoint, retained for compatibility)"""
     # Log the received request
-    logger.info(f"Inngest webhook received: {request.method}")
+    logger.info(f"Inngest webhook received (legacy endpoint): {request.method}")
     logger.info(f"Request data: {request.data}")
     
     # Inngest dev server sends periodic health checks
-    # Don't process these as artist requests
-    try:
-        data = request.json
-        logger.info(f"Processing webhook data: {data}")
-        
-        # Try multiple ways to extract artist name depending on structure
-        artist_name = None
-        
-        # Try direct extraction if this is a direct call
-        if data and isinstance(data, dict):
-            if 'artist_name' in data:
-                artist_name = data['artist_name']
-            elif 'data' in data and isinstance(data['data'], dict) and 'artist_name' in data['data']:
-                artist_name = data['data']['artist_name']
-            elif 'body' in data and isinstance(data['body'], dict):
-                if 'artist_name' in data['body']:
-                    artist_name = data['body']['artist_name']
-                elif 'data' in data['body'] and isinstance(data['body']['data'], dict):
-                    artist_name = data['body']['data'].get('artist_name')
-        
-        # Only process if we found an artist name
-        if artist_name:
-            logger.info(f"Processing artist from webhook: {artist_name}")
-            process_artist(artist_name)
-        else:
-            logger.info("No artist name found in webhook - skipping processing")
-                
-    except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-    
+    # Just acknowledge these, no processing needed
     return jsonify({"status": "received"})
-
-def process_artist(artist_name):
-    """Process artist search request directly"""
-    try:
-        # Store that we're looking for this artist if not already stored
-        search_key = artist_name.lower()
-        if search_key not in RECENT_ARTIST_RESULTS:
-            RECENT_ARTIST_RESULTS[search_key] = {"status": "pending"}
-        
-        with get_db_connection() as connection:
-            cursor = connection.cursor()
-            logger.info(f"Searching database for artist: {artist_name}")
-            
-            # Try exact match first
-            cursor.execute("SELECT ArtistId, Name FROM Artist WHERE LOWER(Name) = LOWER(?)", 
-                         (artist_name,))
-            artist_results = cursor.fetchone()
-            
-            # If no exact match, try partial match
-            if not artist_results:
-                logger.info(f"No exact match for '{artist_name}', trying partial match")
-                cursor.execute("SELECT ArtistId, Name FROM Artist WHERE LOWER(Name) LIKE LOWER(?)", 
-                             (f"%{artist_name}%",))
-                artist_results = cursor.fetchone()
-            
-            if artist_results:
-                artist_id, artist_name = artist_results
-                logger.info(f"Found artist: {artist_name} (ID: {artist_id})")
-                
-                # Get albums
-                cursor.execute("""
-                    SELECT Album.Title, COUNT(Track.TrackId) 
-                    FROM Album
-                    LEFT JOIN Track ON Album.AlbumId = Track.AlbumId
-                    WHERE Album.ArtistId = ?
-                    GROUP BY Album.Title
-                    ORDER BY Album.Title
-                """, (artist_id,))
-                
-                albums = [{"title": row[0], "track_count": row[1]} for row in cursor.fetchall()]
-                
-                # Get total tracks
-                cursor.execute("""
-                    SELECT COUNT(Track.TrackId)
-                    FROM Track
-                    JOIN Album ON Track.AlbumId = Album.AlbumId
-                    WHERE Album.ArtistId = ?
-                """, (artist_id,))
-                
-                total_tracks = cursor.fetchone()[0]
-                
-                # Store the results - important to store with the original search key
-                RECENT_ARTIST_RESULTS[search_key] = {
-                    "status": "success",
-                    "artist_id": artist_id,
-                    "name": artist_name,
-                    "timestamp": datetime.now().isoformat(),
-                    "albums": albums,
-                    "total_tracks": total_tracks
-                }
-                logger.info(f"Stored results for {artist_name}: {len(albums)} albums, {total_tracks} tracks")
-            else:
-                logger.warning(f"No artist found matching: {artist_name}")
-                RECENT_ARTIST_RESULTS[search_key] = {
-                    "status": "not_found",
-                    "message": f"No artist found matching '{artist_name}'",
-                    "timestamp": datetime.now().isoformat()
-                }
-                
-    except Exception as e:
-        logger.error(f"Error processing artist: {str(e)}")
-        RECENT_ARTIST_RESULTS[search_key] = {
-            "status": "error",
-            "message": f"Error processing artist: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.route('/get-artist-results', methods=['GET'])
-def get_artist_results():
-    """Get the results of a previously triggered artist search"""
-    artist_name = request.args.get('artist_name', '').lower()
-    
-    if not artist_name:
-        logger.warning("Artist name parameter is missing")
-        return jsonify({
-            "status": "error",
-            "message": "Artist name parameter is required"
-        }), 400
-    
-    logger.info(f"Checking results for artist: '{artist_name}'")
-    logger.info(f"Available artists: {list(RECENT_ARTIST_RESULTS.keys())}")
-    
-    # Make sure we're using lowercase for comparison
-    results = RECENT_ARTIST_RESULTS.get(artist_name.lower())
-    
-    if not results:
-        logger.warning(f"No results found for artist: '{artist_name}'")
-        return jsonify({
-            "status": "not_found",
-            "message": f"No results found for artist: '{artist_name}'"
-        })
-    
-    logger.info(f"Returning results for '{artist_name}': {results['status']}")
-    return jsonify(results)
 
 def extract_limit(message: str) -> Optional[int]:
     """
@@ -398,6 +268,89 @@ def is_openai_configured() -> bool:
     
     return bool(openai.api_key)
 
+# Add this helper function to check for artist info using Inngest
+def check_artist_via_inngest(artist_name: str) -> str:
+    """
+    Process an artist info request via Inngest for asynchronous processing.
+    
+    Args:
+        artist_name: Name of the artist to look up
+        
+    Returns:
+        str: Response message indicating the status of the request
+    """
+    logger.info(f"Checking artist via Inngest: {artist_name}")
+    
+    if not INNGEST_URL:
+        error_message = "Inngest URL is not configured. Cannot process artist requests."
+        logger.error(error_message)
+        return f"I'm sorry, I can't look up information about {artist_name} right now due to a configuration issue."
+    
+    # Use lowercase key for consistent lookups
+    search_key = artist_name.lower()
+    
+    # Check if we already have results for this artist
+    if search_key in RECENT_ARTIST_RESULTS:
+        result = RECENT_ARTIST_RESULTS[search_key]
+        
+        # If we have a completed result, return it immediately
+        if result.get("status") in ["success", "not_found", "error"]:
+            if result.get("status") == "success":
+                # Format the response for a successful result
+                response = f"**{result.get('name')}**\n\n"
+                
+                albums = result.get('albums', [])
+                total_tracks = result.get('total_tracks', 0)
+                main_genres = result.get('main_genres', [])
+                
+                response += f"Albums: {len(albums)}\n"
+                response += f"Total Tracks: {total_tracks}\n"
+                
+                if main_genres:
+                    response += f"Main Genres: {', '.join(main_genres)}\n"
+                
+                response += "\nAlbums:\n"
+                for album in albums:
+                    response += f"• {album['title']} ({album['track_count']} tracks)\n"
+                
+                return response
+            elif result.get("status") == "not_found":
+                return f"I couldn't find any information about an artist named '{artist_name}'."
+            else:
+                return f"I encountered an error while looking up information about {artist_name}: {result.get('message')}"
+    
+    # If we don't have results, trigger the Inngest function
+    try:
+        # Store that we're looking for this artist
+        RECENT_ARTIST_RESULTS[search_key] = {"status": "pending"}
+        
+        # Send event to Inngest
+        response = requests.post(
+            INNGEST_URL,
+            json={
+                "name": INNGEST_FUNCTION_NAME,
+                "data": {"artist_name": artist_name}
+            },
+            timeout=5
+        )
+        
+        # Check if the request was successful
+        if response.status_code != 200:
+            logger.error(f"Inngest returned status code {response.status_code}: {response.text}")
+            return f"I'm having trouble getting information about {artist_name} right now. Please try again later."
+            
+        # Return a message indicating the request is being processed
+        return f"I'm looking up information about {artist_name}. Please check back in a moment or ask me again soon for the results."
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error calling Inngest: {str(e)}")
+        RECENT_ARTIST_RESULTS[search_key] = {
+            "status": "error",
+            "message": f"Error communicating with background processing service: {str(e)}"
+        }
+        return f"I'm having trouble getting information about {artist_name} due to a network issue. Please try again later."
+
+# Update the get_chatbot_response function to use Inngest for artist queries
 def get_chatbot_response(user_message: str) -> str:
     """
     Process user message and generate response.
@@ -427,11 +380,10 @@ def get_chatbot_response(user_message: str) -> str:
         logger.info(f"Detected specific track+artist query: {track_name} by {artist_name}")
         return get_track_by_artist(track_name, artist_name)
     
-    # Hard-coded cases for immediate fixes
-    # For "who is X" queries, assume it's about an artist first
+    # Handle "who is X" queries using Inngest for artist information
     if re.match(r'^\s*who\s+is\s+([a-z0-9 &\']+)\s*$', user_message.lower()):
         artist_name = re.match(r'^\s*who\s+is\s+([a-z0-9 &\']+)\s*$', user_message.lower()).group(1).strip()
-        return get_artist_info(artist_name)
+        return check_artist_via_inngest(artist_name)
         
     # Quick check for Mofo queries
     if "mofo" in user_message.lower() and "u2" in user_message.lower():
@@ -458,7 +410,7 @@ def get_chatbot_response(user_message: str) -> str:
             
             if query_type == "artist_info" and "artist_name" in query_result:
                 artist_name = query_result["artist_name"]
-                return get_artist_info(artist_name)
+                return check_artist_via_inngest(artist_name)
                 
             if query_type == "album_tracks" and "album_name" in query_result:
                 album_name = query_result["album_name"]
@@ -491,10 +443,18 @@ def get_chatbot_response(user_message: str) -> str:
             song_name = re.search(r'who\s+is\s+(?:the\s+)?artist\s+(?:for|of)\s+([a-z0-9 &\']+)', user_message.lower()).group(1).strip()
             return get_song_info(song_name)
         
-        # Check for "who is" queries about artists
-        if re.search(r'who\s+is\s+([a-z0-9 &\']+)', user_message.lower()):
-            artist_name = re.search(r'who\s+is\s+([a-z0-9 &\']+)', user_message.lower()).group(1).strip()
-            return get_artist_info(artist_name)
+        # Try to process using the knowledge base for artist info
+        if rule_entities.get("artist_name"):
+            artist_name = rule_entities["artist_name"]
+            return check_artist_via_inngest(artist_name)
+        
+        # If we have a report request that might involve artist information
+        if rule_intent == "report" and rule_entities["report_type"] in ["artist_specific", "artist_tracks", "artist_albums"]:
+            potential_artist_match = re.search(r'about\s+([a-z0-9 &\']+)', user_message.lower())
+            if potential_artist_match:
+                artist_name = potential_artist_match.group(1).strip()
+                if len(artist_name) > 2:  # Avoid matching on very short words
+                    return check_artist_via_inngest(artist_name)
         
         # Check for album track listing queries
         if re.search(r'(?:tell|show|what|list)\s+(?:me\s+)?(?:the\s+)?(?:songs|tracks)\s+(?:in|on|from)\s+(?:the\s+)?(?:album\s+)?([a-z0-9 &\']+)', user_message.lower()):
@@ -764,52 +724,56 @@ def generate_report(intent, entities):
 
 def generate_artist_list_report(limit=50):
     """Generate a list of artists in the database"""
-    connection = sqlite3.connect('Chinook.db')
-    cursor = connection.cursor()
-    cursor.execute(f"""
-        SELECT Artist.Name
-        FROM Artist
-        ORDER BY Artist.Name
-        LIMIT {limit}
-    """)
-    rows = cursor.fetchall()
-    connection.close()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT Artist.Name
+                FROM Artist
+                ORDER BY Artist.Name
+                LIMIT {limit}
+            """)
+            rows = cursor.fetchall()
+            
+            # Get total count of artists
+            cursor.execute("SELECT COUNT(*) FROM Artist")
+            total_count = cursor.fetchone()[0]
 
-    # Get total count of artists
-    connection = sqlite3.connect('Chinook.db')
-    cursor = connection.cursor()
-    cursor.execute("SELECT COUNT(*) FROM Artist")
-    total_count = cursor.fetchone()[0]
-    connection.close()
-
-    report = f"Artists in the database (showing {min(limit, len(rows))} of {total_count}):\n"
-    for row in rows:
-        report += f"• {row[0]}\n"
-    
-    if len(rows) < total_count:
-        report += f"\n(Add 'show all' to your request to see all {total_count} artists)"
-    
-    return report
+        report = f"Artists in the database (showing {min(limit, len(rows))} of {total_count}):\n"
+        for row in rows:
+            report += f"• {row[0]}\n"
+        
+        if len(rows) < total_count:
+            report += f"\n(Add 'show all' to your request to see all {total_count} artists)"
+        
+        return report
+    except Exception as e:
+        logger.error(f"Error generating artist list report: {str(e)}")
+        return "Sorry, I couldn't retrieve the list of artists right now."
 
 def generate_artist_tracks_report(limit=5):
-    connection = sqlite3.connect('Chinook.db')
-    cursor = connection.cursor()
-    cursor.execute(f"""
-        SELECT Artist.Name, COUNT(Track.TrackId) 
-        FROM Track 
-        JOIN Album ON Track.AlbumId = Album.AlbumId 
-        JOIN Artist ON Album.ArtistId = Artist.ArtistId 
-        GROUP BY Artist.Name 
-        ORDER BY COUNT(Track.TrackId) DESC 
-        LIMIT {limit}
-    """)
-    rows = cursor.fetchall()
-    connection.close()
+    """Generate a report of artists with the most tracks"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT Artist.Name, COUNT(Track.TrackId) 
+                FROM Track 
+                JOIN Album ON Track.AlbumId = Album.AlbumId 
+                JOIN Artist ON Album.ArtistId = Artist.ArtistId 
+                GROUP BY Artist.Name 
+                ORDER BY COUNT(Track.TrackId) DESC 
+                LIMIT {limit}
+            """)
+            rows = cursor.fetchall()
 
-    report = f"Top {limit} Artists with Most Tracks:\n"
-    for row in rows:
-        report += f"{row[0]}: {row[1]} tracks\n"
-    return report
+        report = f"Top {limit} Artists with Most Tracks:\n"
+        for row in rows:
+            report += f"{row[0]}: {row[1]} tracks\n"
+        return report
+    except Exception as e:
+        logger.error(f"Error generating artist tracks report: {str(e)}")
+        return "Sorry, I couldn't retrieve the artist tracks report right now."
 
 def generate_artist_albums_report(limit=5):
     connection = sqlite3.connect('Chinook.db')
@@ -976,9 +940,9 @@ def find_similar_artists(search_term):
     else:
         return f"Sorry, I couldn't find an artist matching '{search_term}'. Try another artist name or check the spelling."
 
-def generate_sql_from_prompt(user_prompt):
+def generate_sql_from_prompt(user_prompt: str) -> Optional[str]:
     """Generate a SQL query for the Chinook database using OpenAI"""
-    print(f"Generating SQL for prompt: {user_prompt}")
+    logger.info(f"Generating SQL for prompt: {user_prompt}")
     
     system_message = """
     You are a helpful SQL assistant. Generate a SQL query for a SQLite Chinook database.
@@ -1002,17 +966,22 @@ def generate_sql_from_prompt(user_prompt):
     """
     
     try:
+        # Try generating SQL with OpenAI
         sql_query = call_openai(system_message, user_prompt)
-        print(f"Generated SQL: {sql_query}")
+        logger.info(f"Generated SQL query successfully")
         
         # Remove markdown code blocks if present
         sql_query = re.sub(r'```sql\s*|\s*```', '', sql_query)
         
         return sql_query
-    except Exception as e:
-        print(f"SQL generation failed: {str(e)}")
         
-        # Return a hardcoded query based on the prompt as a fallback
+    except Exception as e:
+        logger.error(f"SQL generation failed: {str(e)}")
+        
+        # Return appropriate hardcoded query based on keywords in the prompt
+        logger.info("Falling back to hardcoded queries")
+        
+        # Common queries as fallbacks
         if "artist" in user_prompt.lower() and any(word in user_prompt.lower() for word in ["popular", "top", "most"]):
             return """
             SELECT Artist.Name, COUNT(Track.TrackId) as TrackCount 
@@ -1032,7 +1001,18 @@ def generate_sql_from_prompt(user_prompt):
             ORDER BY TrackCount DESC 
             LIMIT 10
             """
+        elif "album" in user_prompt.lower():
+            return """
+            SELECT Album.Title, Artist.Name, COUNT(Track.TrackId) as TrackCount
+            FROM Album
+            JOIN Artist ON Album.ArtistId = Artist.ArtistId
+            JOIN Track ON Album.AlbumId = Track.AlbumId
+            GROUP BY Album.Title
+            ORDER BY TrackCount DESC
+            LIMIT 10
+            """
         else:
+            logger.warning("No matching hardcoded query for prompt")
             return None
 
 def execute_dynamic_query(user_query):
@@ -1345,6 +1325,96 @@ def get_track_by_artist(track_name, artist_name):
     except Exception as e:
         print(f"Error getting track by artist: {str(e)}")
         return f"I encountered an error while looking up information about '{track_name}' by '{artist_name}'."
+
+# Add this webhook route to handle Inngest callbacks
+@app.route('/webhook/artist-result', methods=['POST'])
+def artist_webhook():
+    """
+    Webhook endpoint to receive results from the Inngest artist lookup function.
+    Stores the results in the RECENT_ARTIST_RESULTS dictionary for retrieval
+    in subsequent user queries.
+    """
+    if not request.is_json:
+        logger.error("Webhook received non-JSON payload")
+        return jsonify({"status": "error", "message": "Expected JSON payload"}), 400
+    
+    try:
+        data = request.json
+        
+        # Validate the required fields
+        if not data.get("artist_name"):
+            logger.error("Webhook missing artist_name field")
+            return jsonify({"status": "error", "message": "Missing artist_name field"}), 400
+        
+        artist_name = data.get("artist_name")
+        search_key = artist_name.lower()
+        
+        # Check for various response types
+        if data.get("status") == "not_found":
+            RECENT_ARTIST_RESULTS[search_key] = {
+                "status": "not_found",
+                "name": artist_name
+            }
+            logger.info(f"Stored not_found result for artist: {artist_name}")
+        elif data.get("status") == "error":
+            RECENT_ARTIST_RESULTS[search_key] = {
+                "status": "error",
+                "name": artist_name,
+                "message": data.get("message", "An unknown error occurred")
+            }
+            logger.error(f"Stored error result for artist: {artist_name} - {data.get('message')}")
+        else:
+            # Store the successful result
+            RECENT_ARTIST_RESULTS[search_key] = {
+                "status": "success",
+                "name": data.get("name", artist_name),
+                "albums": data.get("albums", []),
+                "total_tracks": data.get("total_tracks", 0),
+                "main_genres": data.get("main_genres", [])
+            }
+            logger.info(f"Stored successful result for artist: {artist_name}")
+        
+        return jsonify({"status": "success", "message": "Artist information stored"}), 200
+    
+    except Exception as e:
+        logger.exception(f"Error processing artist webhook: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/get-artist-results', methods=['GET'])
+def get_artist_results():
+    """
+    Get the results of a previously triggered artist search.
+    This endpoint allows the frontend to poll for results that have been
+    asynchronously processed by Inngest.
+    """
+    artist_name = request.args.get('artist_name', '').lower()
+    
+    if not artist_name:
+        logger.warning("Artist name parameter is missing")
+        return jsonify({
+            "status": "error",
+            "message": "Artist name parameter is required"
+        }), 400
+    
+    logger.info(f"Checking results for artist: '{artist_name}'")
+    
+    # Make sure we're using lowercase for comparison
+    results = RECENT_ARTIST_RESULTS.get(artist_name.lower())
+    
+    if not results:
+        logger.warning(f"No results found for artist: '{artist_name}'")
+        return jsonify({
+            "status": "not_found",
+            "message": f"No results found for artist: '{artist_name}'. Try triggering a search first."
+        })
+    
+    logger.info(f"Returning results for '{artist_name}': {results['status']}")
+    
+    # Add timestamp if not present
+    if "timestamp" not in results:
+        results["timestamp"] = datetime.now().isoformat()
+        
+    return jsonify(results)
 
 if __name__ == '__main__':
     # Use environment variables with sensible defaults for production

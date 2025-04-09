@@ -7,24 +7,111 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div class="chat-container">
-        <div class="chat-box" id="chat-box">
-            <p><strong>Bot:</strong> Hello! How can I assist you today?</p>
+    <div class="container">
+        <h1>AI Music Chatbot</h1>
+        
+        <div class="search-section">
+            <h2>Artist Search</h2>
+            <div class="search-bar">
+                <input type="text" id="artist-input" placeholder="Enter an artist name (e.g., Queen, U2)">
+                <button onclick="searchArtist()">Search</button>
+            </div>
+            <div id="artist-results-section" style="display: none;">
+                <h3>Artist Results</h3>
+                <div id="artist-results" class="results-container">
+                    <!-- Results will be displayed here -->
+                </div>
+            </div>
         </div>
         
-        <div class="artist-search">
-            <input type="text" id="artist-input" placeholder="Enter artist name...">
-            <button onclick="searchArtist()">Search Artist</button>
+        <div class="chat-section">
+            <h2>Chat</h2>
+            <div id="chat-box" class="chat-container">
+                <p><strong>Bot:</strong> Hi there! I'm your music database assistant. You can ask me questions about artists, albums, tracks, and genres.</p>
+                <p><strong>Bot:</strong> Try questions like "Show me top 5 genres" or "Who is the artist for Bohemian Rhapsody?"</p>
+            </div>
+            <div class="input-area">
+                <input type="text" id="user-input" placeholder="Type your message...">
+                <button onclick="sendMessage()">Send</button>
+            </div>
         </div>
         
-        <div class="input-container">
-            <input type="text" id="user-input" placeholder="Type your message...">
-            <button onclick="sendMessage()">Send</button>
+        <div id="debug-section" class="debug-section" style="display: none;">
+            <h3>Debug Info</h3>
+            <pre id="debug-info"></pre>
         </div>
-        
-        <div class="debug-info" id="debug-info"></div>
     </div>
-
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="/static/script.js"></script>
 </body>
 </html>
+
+<style>
+    /* ... existing styles ... */
+    
+    .search-section {
+        background-color: #f5f5f5;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+    }
+    
+    .search-bar {
+        display: flex;
+        margin-bottom: 15px;
+    }
+    
+    .search-bar input {
+        flex: 1;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px 0 0 4px;
+    }
+    
+    .search-bar button {
+        padding: 8px 15px;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 0 4px 4px 0;
+        cursor: pointer;
+    }
+    
+    .results-container {
+        background-color: white;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 15px;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+    
+    .result, .error, .loading {
+        margin-bottom: 10px;
+    }
+    
+    .result h3 {
+        margin-top: 0;
+        color: #333;
+    }
+    
+    .result h4 {
+        margin: 10px 0 5px;
+        color: #555;
+    }
+    
+    .result ul {
+        margin: 0;
+        padding-left: 20px;
+    }
+    
+    .error {
+        color: #d32f2f;
+    }
+    
+    .loading {
+        color: #1976d2;
+        font-style: italic;
+    }
+    
+    /* ... existing styles ... */
+</style>

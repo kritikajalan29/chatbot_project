@@ -1,0 +1,27 @@
+{
+  "project": "music-chatbot",
+  "id": "music-chatbot",
+  "frameworks": {
+    "fastapi": {
+      "path": "./inngest/inngest_app.py",
+      "export": "app"
+    }
+  },
+  "functions": [
+    {
+      "name": "get-artist",
+      "path": "./inngest/functions/get_artist.py"
+    }
+  ],
+  "serve": {
+    "cmd": ["python", "-m", "uvicorn", "inngest.inngest_app:app", "--host", "0.0.0.0", "--port", "8000"]
+  },
+  "environment": {
+    "production": {
+      "FLASK_WEBHOOK_URL": "https://your-app.onrender.com/webhook/artist-result"
+    },
+    "development": {
+      "FLASK_WEBHOOK_URL": "http://localhost:5000/webhook/artist-result"
+    }
+  }
+} 
