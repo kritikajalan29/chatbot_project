@@ -1,29 +1,46 @@
-from inngest import inngest_function
+from inngest import Inngest, Context, Step, TriggerEvent
 import sqlite3
 import logging
 import requests
 import os
 from typing import Dict, Any, Optional, List
+from pathlib import Path
+import asyncio
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables or use defaults
-FLASK_WEBHOOK_URL = os.environ.get("FLASK_WEBHOOK_URL", "http://localhost:5000/webhook/artist-result")
+# Get the project root directory (2 levels up from this file)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DB_PATH = PROJECT_ROOT / "Chinook.db"
 
-@inngest_function(name="Get Artist Details")
-async def get_artist(event: Dict[str, Any]) -> Dict[str, Any]:
+# Load environment variables or use defaults
+FLASK_WEBHOOK_URL = os.environ.get("FLASK_WEBHOOK_URL", "http://localhost:4000/webhook/artist-result")
+
+# Initialize Inngest client
+inngest_client = Inngest(
+    app_id="music-chatbot",  # Changed from 'name' to 'app_id'
+    logger=logging.getLogger("uvicorn")  # Optional but recommended for logging
+)
+
+# Create an Inngest function using the decorator syntax
+@inngest_client.create_function(
+    fn_id="get-artist-details",  # Unique identifier for the function
+    trigger=TriggerEvent(event="get.artist")  # Event that triggers this function
+)
+async def get_artist_handler(ctx: Context, step: Step) -> Dict:
     """
     Get artist details from the database.
     This function retrieves detailed information about an artist and their albums.
     
     Args:
-        event: Inngest event containing artist_name in data
+        ctx: Inngest context
+        step: Inngest step
         
     Returns:
         Dict containing artist details or error message
     """
     try:
-        artist_name = event.data.get("artist_name", "")
+        artist_name = ctx.event.data.get("artist_name", "")
         
         if not artist_name:
             logger.error("No artist name provided in event data")
@@ -41,7 +58,7 @@ async def get_artist(event: Dict[str, Any]) -> Dict[str, Any]:
         
         logger.info(f"Fetching details for artist: {artist_name}")
         
-        conn = sqlite3.connect("chinook.db")
+        conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row  # Use Row to get column names
         cursor = conn.cursor()
         
@@ -169,3 +186,6 @@ async def get_artist(event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as webhook_error:
             logger.error(f"Failed to send webhook: {str(webhook_error)}")
         return response_data
+
+get_artist = get_artist_handler
+

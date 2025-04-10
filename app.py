@@ -12,6 +12,15 @@ import logging
 from typing import Dict, Any, Optional, Generator, List, Tuple, Union
 from datetime import datetime
 import time
+# import sys
+# from pathlib import Path
+
+# # Add the project root directory to the Python path
+# project_root = Path(__file__).resolve().parent
+# sys.path.insert(0, str(project_root))
+
+# Now the import should be found
+from inngest_setup.functions.get_artist import inngest_client
 
 # Load environment variables from .env file
 load_dotenv()
@@ -269,86 +278,30 @@ def is_openai_configured() -> bool:
     return bool(openai.api_key)
 
 # Add this helper function to check for artist info using Inngest
-def check_artist_via_inngest(artist_name: str) -> str:
-    """
-    Process an artist info request via Inngest for asynchronous processing.
-    
-    Args:
-        artist_name: Name of the artist to look up
-        
-    Returns:
-        str: Response message indicating the status of the request
-    """
+async def check_artist_via_inngest(artist_name: str) -> str:
+    """Process an artist info request via Inngest"""
     logger.info(f"Checking artist via Inngest: {artist_name}")
     
-    if not INNGEST_URL:
-        error_message = "Inngest URL is not configured. Cannot process artist requests."
-        logger.error(error_message)
-        return f"I'm sorry, I can't look up information about {artist_name} right now due to a configuration issue."
-    
-    # Use lowercase key for consistent lookups
-    search_key = artist_name.lower()
-    
-    # Check if we already have results for this artist
-    if search_key in RECENT_ARTIST_RESULTS:
-        result = RECENT_ARTIST_RESULTS[search_key]
-        
-        # If we have a completed result, return it immediately
-        if result.get("status") in ["success", "not_found", "error"]:
-            if result.get("status") == "success":
-                # Format the response for a successful result
-                response = f"**{result.get('name')}**\n\n"
-                
-                albums = result.get('albums', [])
-                total_tracks = result.get('total_tracks', 0)
-                main_genres = result.get('main_genres', [])
-                
-                response += f"Albums: {len(albums)}\n"
-                response += f"Total Tracks: {total_tracks}\n"
-                
-                if main_genres:
-                    response += f"Main Genres: {', '.join(main_genres)}\n"
-                
-                response += "\nAlbums:\n"
-                for album in albums:
-                    response += f"• {album['title']} ({album['track_count']} tracks)\n"
-                
-                return response
-            elif result.get("status") == "not_found":
-                return f"I couldn't find any information about an artist named '{artist_name}'."
-            else:
-                return f"I encountered an error while looking up information about {artist_name}: {result.get('message')}"
-    
-    # If we don't have results, trigger the Inngest function
     try:
         # Store that we're looking for this artist
+        search_key = artist_name.lower()
         RECENT_ARTIST_RESULTS[search_key] = {"status": "pending"}
         
-        # Send event to Inngest
-        response = requests.post(
-            INNGEST_URL,
-            json={
-                "name": INNGEST_FUNCTION_NAME,
-                "data": {"artist_name": artist_name}
-            },
-            timeout=5
+        # Trigger the Inngest event properly
+        await inngest_client.send(
+            name="get.artist",  # This must match the trigger event name in get_artist.py
+            data={"artist_name": artist_name}
         )
         
-        # Check if the request was successful
-        if response.status_code != 200:
-            logger.error(f"Inngest returned status code {response.status_code}: {response.text}")
-            return f"I'm having trouble getting information about {artist_name} right now. Please try again later."
-            
-        # Return a message indicating the request is being processed
         return f"I'm looking up information about {artist_name}. Please check back in a moment or ask me again soon for the results."
         
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling Inngest: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error triggering Inngest event: {str(e)}")
         RECENT_ARTIST_RESULTS[search_key] = {
             "status": "error",
-            "message": f"Error communicating with background processing service: {str(e)}"
+            "message": f"Error triggering search: {str(e)}"
         }
-        return f"I'm having trouble getting information about {artist_name} due to a network issue. Please try again later."
+        return f"I'm having trouble looking up information about {artist_name}. Please try again later."
 
 # Update the get_chatbot_response function to use Inngest for artist queries
 def get_chatbot_response(user_message: str) -> str:

@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 import os
 import sys
 import logging
-from inngest.fastapi import Inngest  # type: ignore
-from functions.get_artist import get_artist
+import inngest.fast_api
+from inngest_setup import Inngest
+from functions.get_artist import get_artist, inngest_client
 
 # Configure logging
 logging.basicConfig(
@@ -25,14 +26,14 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
     
-    # Configure Inngest
-    inngest_client = Inngest(
-        app=app, 
-        functions=[get_artist],
-        logger=logger,
-        event_key=os.environ.get("INNGEST_EVENT_KEY"),
-        signing_key=os.environ.get("INNGEST_SIGNING_KEY")
-    )
+    # Remove the manual registration and replace with serve
+    inngest.fast_api.serve(app, inngest_client, [get_artist])
+    
+    # Create handler for Inngest requests
+    @app.post("/api/inngest")
+    @app.put("/api/inngest")
+    async def handle_inngest(request: Request):
+        return await inngest_client.handle_request(request)
     
     # Add health check endpoint
     @app.get("/health")
